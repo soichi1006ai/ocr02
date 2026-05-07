@@ -31,7 +31,16 @@ export const KoyomiSchema = z.object({
   months: z.array(MonthSchema).length(12)
 });
 
+export const KoyomiHalfSchema = z.object({
+  year_label: z.string().min(1),
+  year_kanshi: z.string().min(2),
+  year_kyoku: z.string().min(1),
+  year_kyuusei: z.string().min(1),
+  months: z.array(MonthSchema).min(1).max(7)
+});
+
 export type Sekki = z.infer<typeof SekkiSchema>;
 export type DayEntry = z.infer<typeof DayEntrySchema>;
 export type Month = z.infer<typeof MonthSchema>;
 export type Koyomi = z.infer<typeof KoyomiSchema>;
+export type KoyomiHalf = z.infer<typeof KoyomiHalfSchema>;

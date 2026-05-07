@@ -2,11 +2,14 @@ import { readFile } from 'node:fs/promises';
 import Anthropic from '@anthropic-ai/sdk';
 import pRetry from 'p-retry';
 import { loadPrompt } from '../prompt-loader.js';
-import { Koyomi, KoyomiSchema } from '../domain/types.js';
+import { Koyomi, KoyomiHalf, KoyomiHalfSchema } from '../domain/types.js';
 import { ValidationError, validateKoyomi } from './validator.js';
 
 const INPUT_COST_PER_MTOK = 15;
 const OUTPUT_COST_PER_MTOK = 75;
+
+// 右ページ（前半月）: 2〜7月、左ページ（後半月）: 1月・8〜12月
+const RIGHT_MONTHS = new Set([2, 3, 4, 5, 6, 7]);
 
 export interface ExtractUsage {
   input_tokens: number;
@@ -39,8 +42,10 @@ export class KoyomiExtractor {
   }
 
   async extractWithValidation(leftImagePath: string, rightImagePath: string): Promise<ExtractResult> {
-    let previousResult = '';
-    let previousErrors = '';
+    let rightPrev = '';
+    let leftPrev = '';
+    let rightErrors = '';
+    let leftErrors = '';
     let totalUsage: ExtractUsage = { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
     let finalKoyomi: Koyomi | null = null;
     let finalErrors: ValidationError[] = [];
@@ -49,27 +54,48 @@ export class KoyomiExtractor {
 
     for (let attempt = 0; attempt <= this.retryLimit; attempt += 1) {
       attempts = attempt + 1;
-      const promptName = attempt === 0 ? 'koyomi-extract.md' : 'koyomi-retry.md';
-      const prompt = await loadPrompt(promptName, {
-        ERRORS: previousErrors,
-        PREVIOUS_RESULT: previousResult
-      });
+      const isRetry = attempt > 0;
+
+      const [rightPrompt, leftPrompt] = await Promise.all([
+        loadPrompt(isRetry ? 'koyomi-retry-right.md' : 'koyomi-extract-right.md', {
+          ERRORS: rightErrors,
+          PREVIOUS_RESULT: rightPrev
+        }),
+        loadPrompt(isRetry ? 'koyomi-retry-left.md' : 'koyomi-extract-left.md', {
+          ERRORS: leftErrors,
+          PREVIOUS_RESULT: leftPrev
+        })
+      ]);
 
       try {
-        const result = await this.extract(leftImagePath, rightImagePath, prompt);
-        totalUsage = mergeUsage(totalUsage, result.usage);
-        finalKoyomi = result.koyomi;
-        finalErrors = validateKoyomi(result.koyomi);
+        const [rightResult, leftResult] = await Promise.all([
+          this.extractHalf(rightImagePath, rightPrompt),
+          this.extractHalf(leftImagePath, leftPrompt)
+        ]);
+
+        totalUsage = mergeUsage(totalUsage, mergeUsage(rightResult.usage, leftResult.usage));
+
+        const merged = mergeHalves(rightResult.half, leftResult.half);
+        finalKoyomi = merged;
+        finalErrors = validateKoyomi(merged);
+
         if (finalErrors.length === 0) {
-          return { koyomi: result.koyomi, usage: totalUsage, validationErrors: [], attempts };
+          return { koyomi: merged, usage: totalUsage, validationErrors: [], attempts };
         }
-        previousResult = JSON.stringify(result.koyomi, null, 2);
-        previousErrors = finalErrors.map((error) => `- ${error.message}`).join('\n');
+
+        rightPrev = JSON.stringify(rightResult.half, null, 2);
+        leftPrev = JSON.stringify(leftResult.half, null, 2);
+        const { right: rErrs, left: lErrs } = splitErrorsByPage(finalErrors);
+        rightErrors = rErrs.map((e) => `- ${e.message}`).join('\n');
+        leftErrors = lErrs.map((e) => `- ${e.message}`).join('\n');
         lastError = null;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        previousErrors = `- JSON またはスキーマの解釈に失敗: ${lastError.message}`;
-        previousResult = '';
+        const msg = `- JSON またはスキーマの解釈に失敗: ${lastError.message}`;
+        rightErrors = msg;
+        leftErrors = msg;
+        rightPrev = '';
+        leftPrev = '';
       }
     }
 
@@ -80,20 +106,18 @@ export class KoyomiExtractor {
     return { koyomi: finalKoyomi, usage: totalUsage, validationErrors: finalErrors, attempts };
   }
 
-  async extract(leftImagePath: string, rightImagePath: string, prompt: string): Promise<{ koyomi: Koyomi; usage: ExtractUsage }> {
-    const leftImageBase64 = await encodeImage(leftImagePath);
-    const rightImageBase64 = await encodeImage(rightImagePath);
+  private async extractHalf(imagePath: string, prompt: string): Promise<{ half: KoyomiHalf; usage: ExtractUsage }> {
+    const imageBase64 = await encodeImage(imagePath);
 
     const response = await pRetry(
       async () => this.client.messages.create({
         model: this.model,
-        max_tokens: 20000,
+        max_tokens: 10000,
         messages: [
           {
             role: 'user',
             content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: leftImageBase64 } },
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: rightImageBase64 } },
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageBase64 } },
               { type: 'text', text: prompt }
             ]
           }
@@ -110,12 +134,12 @@ export class KoyomiExtractor {
 
     const jsonText = extractJson(rawText);
     const parsed = JSON.parse(jsonText);
-    const koyomi = KoyomiSchema.parse(parsed);
+    const half = KoyomiHalfSchema.parse(parsed);
     const inputTokens = response.usage.input_tokens ?? 0;
     const outputTokens = response.usage.output_tokens ?? 0;
 
     return {
-      koyomi,
+      half,
       usage: {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
@@ -123,6 +147,40 @@ export class KoyomiExtractor {
       }
     };
   }
+}
+
+function mergeHalves(right: KoyomiHalf, left: KoyomiHalf): Koyomi {
+  const allMonths = [...right.months, ...left.months].sort((a, b) => a.month - b.month);
+  return {
+    year_label: right.year_label || left.year_label,
+    year_kanshi: right.year_kanshi || left.year_kanshi,
+    year_kyoku: right.year_kyoku || left.year_kyoku,
+    year_kyuusei: right.year_kyuusei || left.year_kyuusei,
+    months: allMonths
+  } as Koyomi;
+}
+
+function splitErrorsByPage(errors: ValidationError[]): { right: ValidationError[]; left: ValidationError[] } {
+  const right: ValidationError[] = [];
+  const left: ValidationError[] = [];
+  for (const err of errors) {
+    if (err.category === 'kanshi_continuity') {
+      right.push(err);
+      left.push(err);
+      continue;
+    }
+    const match = err.message.match(/^(\d+)月/);
+    const month = match ? Number(match[1]) : null;
+    if (month === null) {
+      right.push(err);
+      left.push(err);
+    } else if (RIGHT_MONTHS.has(month)) {
+      right.push(err);
+    } else {
+      left.push(err);
+    }
+  }
+  return { right, left };
 }
 
 export function extractJson(rawText: string): string {
