@@ -45,6 +45,7 @@ export class KoyomiExtractor {
     let finalKoyomi: Koyomi | null = null;
     let finalErrors: ValidationError[] = [];
     let attempts = 0;
+    let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= this.retryLimit; attempt += 1) {
       attempts = attempt + 1;
@@ -53,19 +54,27 @@ export class KoyomiExtractor {
         ERRORS: previousErrors,
         PREVIOUS_RESULT: previousResult
       });
-      const result = await this.extract(leftImagePath, rightImagePath, prompt);
-      totalUsage = mergeUsage(totalUsage, result.usage);
-      finalKoyomi = result.koyomi;
-      finalErrors = validateKoyomi(result.koyomi);
-      if (finalErrors.length === 0) {
-        return { koyomi: result.koyomi, usage: totalUsage, validationErrors: [], attempts };
+
+      try {
+        const result = await this.extract(leftImagePath, rightImagePath, prompt);
+        totalUsage = mergeUsage(totalUsage, result.usage);
+        finalKoyomi = result.koyomi;
+        finalErrors = validateKoyomi(result.koyomi);
+        if (finalErrors.length === 0) {
+          return { koyomi: result.koyomi, usage: totalUsage, validationErrors: [], attempts };
+        }
+        previousResult = JSON.stringify(result.koyomi, null, 2);
+        previousErrors = finalErrors.map((error) => `- ${error.message}`).join('\n');
+        lastError = null;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        previousErrors = `- JSON またはスキーマの解釈に失敗: ${lastError.message}`;
+        previousResult = '';
       }
-      previousResult = JSON.stringify(result.koyomi, null, 2);
-      previousErrors = finalErrors.map((error) => `- ${error.message}`).join('\n');
     }
 
     if (!finalKoyomi) {
-      throw new Error('抽出結果が取得できませんでした。');
+      throw lastError ?? new Error('抽出結果が取得できませんでした。');
     }
 
     return { koyomi: finalKoyomi, usage: totalUsage, validationErrors: finalErrors, attempts };
@@ -78,8 +87,7 @@ export class KoyomiExtractor {
     const response = await pRetry(
       async () => this.client.messages.create({
         model: this.model,
-        max_tokens: 8192,
-        thinking: { type: 'enabled', budget_tokens: 4000 },
+        max_tokens: 20000,
         messages: [
           {
             role: 'user',

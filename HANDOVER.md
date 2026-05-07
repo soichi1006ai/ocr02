@@ -253,7 +253,47 @@ DonCorleone エコシステム経由で同期される。
 
 ---
 
-## 13. 終わりに
+## 13. 現在の実装状況メモ（2026-05-08 追記）
+
+`soichi1006ai/ocr02` には、OpenClaw 側で作成した CLI 土台一式を投入済み。
+
+### 確認済み
+- `npm run test:run` → 12 tests passed
+- `npm run build` → 成功
+- `--prepare-only` → 2029 / 2030 で成功
+- 左右分割画像は再結合すると元画像と一致
+- request bundle JSON の構造は妥当
+- 2029 / 2030 の見本 xlsx 配置も確認済み
+
+### 取り込み後に入れた修正
+1. **再実行時スキップ判定の改善**
+   - `_logs/<stem>.json` を見て `outputPath` / `sampleOutput` / `requestBundle` を基準に既存成果物を判定するよう修正
+2. **画像サイズ対策**
+   - `pdf-to-img` の scale を `3 -> 2` に変更
+   - Anthropic API の 5MB 制限に引っかかりにくくした
+3. **Anthropic API 仕様差分への対応**
+   - 旧 `thinking: { type: 'enabled', budget_tokens: 4000 }` を削除
+   - `claude-sonnet-4-6` での実行を妨げないよう修正
+4. **抽出失敗時の耐性改善**
+   - JSON / スキーマ解釈エラーでも即死せず、リトライ文脈へ載せられるよう修正
+5. **出力トークン上限の引き上げ**
+   - `max_tokens: 8192 -> 20000`
+
+### 2019.pdf の本抽出で確認できたこと
+- billing / API key / model 到達性は解消済み
+- `claude-sonnet-4-6` で API 呼び出し自体は通る
+- ただし **1回で12か月分の巨大 JSON を返させると JSON が壊れて失敗する**
+  - 例: `Expected ',' or ']' after array element in JSON ...`
+
+### 次にやるべき本命対応
+- **抽出を分割すること**
+  - 右ページで 1〜6月
+  - 左ページで 7〜12月
+  - または月単位 / 半期単位で個別抽出して最後にマージ
+
+現状の最大ボトルネックは、OCR精度そのものよりも **巨大 JSON 一括出力の不安定さ** にある。
+
+## 14. 終わりに
 
 このツールはマスターSの暦表変換業務を**長期的に支える基盤**。
 スピードよりも品質と保守性を優先すること。

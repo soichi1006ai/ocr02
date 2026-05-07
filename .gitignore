@@ -2,5 +2,8 @@ node_modules/
 dist/
 .env
 *.log
+_logs/
 output/
 output_samples/_logs/
+*_暦表.xlsx
+*_暦表_v2.xlsx

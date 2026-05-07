@@ -5,7 +5,8 @@ import { PNG } from 'pngjs';
 
 export async function convertPdfToImages(pdfPath: string, outputDir: string): Promise<string[]> {
   await mkdir(outputDir, { recursive: true });
-  const document = await pdf(pdfPath, { scale: 3 });
+  // Anthropic API の画像上限 5MB を超えにくくするため、解像度は少し抑える。
+  const document = await pdf(pdfPath, { scale: 2 });
   const filePaths: string[] = [];
   let pageNumber = 1;
 
