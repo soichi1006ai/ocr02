@@ -302,7 +302,9 @@ function normalizeTime(time: string): string {
   const digits = time.replace(/\D/g, '');
   if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
   if (digits.length === 3) return `${digits[0]}:${digits.slice(1)}`;
-  return time;
+  if (digits.length === 2) return `${digits}:00`;
+  // 解読不能（[?] 等）→ フォールバック
+  return '0:00';
 }
 
 const KANJI_NUM: Record<string, number> = { 一:1, 二:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9 };
