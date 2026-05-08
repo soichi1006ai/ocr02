@@ -269,6 +269,12 @@ function normalizeDate(date: string): string {
   // "1月5日" → "1/5"
   const jp = date.match(/(\d{1,2})月(\d{1,2})日/);
   if (jp) return `${jp[1]}/${jp[2]}`;
+  // "2/10" を文字列中から抽出（余分なテキストや時刻が混入している場合）
+  const slash = date.match(/(\d{1,2})\/(\d{1,2})/);
+  if (slash) return `${slash[1]}/${slash[2]}`;
+  // "2-10" / "2.10" → "2/10"
+  const sep = date.match(/^(\d{1,2})[-.](\d{1,2})$/);
+  if (sep) return `${sep[1]}/${sep[2]}`;
   return date;
 }
 
@@ -289,6 +295,9 @@ function normalizeTime(time: string): string {
   // 埋め込み数字から HH:MM を抽出（"約16:31" など）
   const embedded = time.match(/(\d{1,2})[：:](\d{2})/);
   if (embedded) return `${embedded[1]}:${embedded[2]}`;
+  // 1桁分 "8:3" → "8:03"
+  const singleMin = time.match(/^(\d{1,2}):(\d)$/);
+  if (singleMin) return `${singleMin[1]}:0${singleMin[2]}`;
   // 4桁数字 "1631" → "16:31"
   const digits = time.replace(/\D/g, '');
   if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
