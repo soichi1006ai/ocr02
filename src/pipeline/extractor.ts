@@ -133,7 +133,7 @@ export class KoyomiExtractor {
       .trim();
 
     const jsonText = extractJson(rawText);
-    const parsed = JSON.parse(jsonText);
+    const parsed = normalizeRaw(JSON.parse(jsonText));
     const half = KoyomiHalfSchema.parse(parsed);
     const inputTokens = response.usage.input_tokens ?? 0;
     const outputTokens = response.usage.output_tokens ?? 0;
@@ -207,4 +207,110 @@ function mergeUsage(a: ExtractUsage, b: ExtractUsage): ExtractUsage {
     output_tokens: a.output_tokens + b.output_tokens,
     cost_usd: Number((a.cost_usd + b.cost_usd).toFixed(4))
   };
+}
+
+// Claudeが返すJSONの表記ゆれをZodパース前に正規化する
+function normalizeRaw(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const obj = raw as Record<string, unknown>;
+  if (!Array.isArray(obj.months)) return raw;
+
+  obj.months = obj.months.map((month: unknown) => {
+    if (!month || typeof month !== 'object') return month;
+    const m = { ...(month as Record<string, unknown>) };
+
+    if (Array.isArray(m.sekki)) {
+      m.sekki = m.sekki.map((s: unknown) => {
+        if (!s || typeof s !== 'object') return s;
+        const sk = { ...(s as Record<string, unknown>) };
+
+        // type: "土旺"→"doou"、それ以外の不明値→"sekki"
+        if (sk.type !== 'sekki' && sk.type !== 'doou') {
+          sk.type = String(sk.type ?? '').includes('土') ? 'doou' : 'sekki';
+        }
+
+        // date: 全角→半角、"X月X日"→"X/X"
+        if (typeof sk.date === 'string') sk.date = normalizeDate(sk.date);
+
+        // time: 全角→半角、"X時X分"→"X:XX"、秒除去
+        if (typeof sk.time === 'string') sk.time = normalizeTime(sk.time);
+
+        return sk;
+      });
+    }
+
+    if (Array.isArray(m.days)) {
+      m.days = m.days.map((d: unknown) => {
+        if (!d || typeof d !== 'object') return d;
+        const day = { ...(d as Record<string, unknown>) };
+
+        // kyuusei_kanji: "火6"のように数字込みの場合は漢字部分だけ取り出す
+        if (typeof day.kyuusei_kanji === 'string' && day.kyuusei_kanji.length > 1) {
+          day.kyuusei_kanji = day.kyuusei_kanji.replace(/\d/g, '').slice(0, 1);
+        }
+
+        // kyuusei_num: 文字列・漢数字・範囲外を正規化
+        day.kyuusei_num = normalizeKyuuseiNum(day.kyuusei_num);
+
+        return day;
+      });
+    }
+
+    return m;
+  });
+
+  return obj;
+}
+
+function normalizeDate(date: string): string {
+  // 全角数字・スラッシュ → 半角
+  date = date.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFF10 + 0x30));
+  date = date.replace(/[／]/g, '/');
+  // "1月5日" → "1/5"
+  const jp = date.match(/(\d{1,2})月(\d{1,2})日/);
+  if (jp) return `${jp[1]}/${jp[2]}`;
+  return date;
+}
+
+function normalizeTime(time: string): string {
+  if (!time) return time;
+  // 全角数字・コロン → 半角
+  time = time.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFF10 + 0x30));
+  time = time.replace(/[：]/g, ':');
+  // "16時31分" → "16:31"
+  const jp = time.match(/(\d{1,2})時(\d{1,2})分/);
+  if (jp) return `${jp[1]}:${jp[2].padStart(2, '0')}`;
+  // "16:31:00" → "16:31"（秒除去）
+  const withSec = time.match(/^(\d{1,2}:\d{2}):\d{2}$/);
+  if (withSec) return withSec[1];
+  // "16.31" などセパレータ違い → "16:31"
+  const dotSep = time.match(/^(\d{1,2})[.\-](\d{2})$/);
+  if (dotSep) return `${dotSep[1]}:${dotSep[2]}`;
+  // 埋め込み数字から HH:MM を抽出（"約16:31" など）
+  const embedded = time.match(/(\d{1,2})[：:](\d{2})/);
+  if (embedded) return `${embedded[1]}:${embedded[2]}`;
+  // 4桁数字 "1631" → "16:31"
+  const digits = time.replace(/\D/g, '');
+  if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+  if (digits.length === 3) return `${digits[0]}:${digits.slice(1)}`;
+  return time;
+}
+
+const KANJI_NUM: Record<string, number> = { 一:1, 二:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9 };
+
+function normalizeKyuuseiNum(raw: unknown): number {
+  if (typeof raw === 'number') {
+    // 範囲外（0や負数）は1にクランプ
+    return Math.max(1, Math.min(9, Math.round(raw)));
+  }
+  if (typeof raw === 'string') {
+    // 半角数字を探す
+    const digit = raw.match(/[1-9]/);
+    if (digit) return Number(digit[0]);
+    // 漢数字を探す
+    for (const [k, v] of Object.entries(KANJI_NUM)) {
+      if (raw.includes(k)) return v;
+    }
+  }
+  return 1; // fallback
 }
